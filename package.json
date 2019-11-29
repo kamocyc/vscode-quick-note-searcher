@@ -12,13 +12,13 @@
 		"Other"
 	],
 	"activationEvents": [
-		"onCommand:extension.helloWorld"
+		"onCommand:quick-file-searcher.show-search-box"
 	],
 	"main": "./out/extension.js",
 	"contributes": {
 		"commands": [
 			{
-				"command": "extension.helloWorld",
+				"command": "quick-file-searcher.show-search-box",
 				"title": "Hello World"
 			}
 		]
@@ -32,7 +32,7 @@
 	"devDependencies": {
 		"@types/node": "^10.14.17",
 		"@types/vscode": "^1.34.0",
-		"tslint": "^5.16.0",
-		"typescript": "^3.5.1"
+		"tslint": "^5.20.0",
+		"typescript": "^3.7.2"
 	}
 }
