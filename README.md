@@ -9,13 +9,14 @@ You can quickly seach your markdown notes with words and tags, powered by ripgre
 
 ## Usage
 
-1. Open arbitary folder in vscode.
-2. Open command palette, and type ``Quick note search``.
-3. Type seach words and ``#``-prefixed tags. (ex. ``#vscode debug``)
+1. Open arbitary folderes in vscode.
+2. Open a command palette, and type ``Quick note search``.
+3. Type seach words and/or ``#``-prefixed tags. (ex. ``#vscode debug``)
 
-* When input multiple words, tags are treated as "OR" condition, words are "AND" condition.
+* When input multiple words, tags are treated as "OR" condition, while words are "AND" condition. And only files matched with tags AND matched with words are in result.
+* Text contents of files and file names are searched with words.
 * Search words are case-insensitive.
-* Tag format is YAML-like, but only list format enclosed by ``[`` and ``]`` is allowed, and must be immediately after beginning of each file, as example below:
+* Tag format is YAML-like, but only list format enclosed by ``[`` and ``]`` is allowed, and must be immediately after beginning of each file, as an example below:
 
 ```md
 ---
