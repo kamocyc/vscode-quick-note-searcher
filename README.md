@@ -1,27 +1,30 @@
-# Hello World Sample
+# Quick note searcher for vscode
 
-This is a Hello World example that shows you how to use VS Code API.
+You can quickly seach your markdown notes with words and tags, powered by ripgrep.
 
-Guide for this sample: https://code.visualstudio.com/api/get-started/your-first-extension.
+## Install
 
-## Demo
+1. Install ripgrep (https://github.com/BurntSushi/ripgrep)
+2. Install this extension to vscode as usual.
 
-![demo](demo.gif)
+## Usage
 
-## VS Code API
+1. Open arbitary folder in vscode.
+2. Open command palette, and type ``Quick note search``.
+3. Type seach words and ``#``-prefixed tags. (ex. ``#vscode debug``)
 
-### `vscode` module
+* When input multiple words, tags are treated as "OR" condition, words are "AND" condition.
+* Search words are case-insensitive.
+* Tag format is YAML-like, but only list format enclosed by ``[`` and ``]`` is allowed, and must be immediately after beginning of each file, as example below:
 
-- [`commands.registerCommand`](https://code.visualstudio.com/api/references/vscode-api#commands.registerCommand)
-- [`window.showInformationMessage`](https://code.visualstudio.com/api/references/vscode-api#window.showInformationMessage)
+```md
+---
+tags: [ programming, vscode ]
+---
 
-### Contribution Points
+# How to debug extension
 
-- [`contributes.commands`](https://code.visualstudio.com/api/references/contribution-points#contributes.commands)
+Bla bla bla...
+```
 
-## Running the Sample
-
-- Run `npm install` in terminal to install dependencies
-- Run the `Run Extension` target in the Debug View. This will:
-	- Start a task `npm: watch` to compile the code
-	- Run the extension in a new VS Code window
+<!-- A quick file searcher for vscode, with highly customizable configuration, powered by The Silver Seacher (ag) / ripgrep (rg) / grep / findstr -->

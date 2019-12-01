@@ -1,7 +1,7 @@
 {
-	"name": "quick-file-searcher",
-	"displayName": "quick-file-searcher",
-	"description": "Customizable quick file searcher for VS Code",
+	"name": "quick-note-searcher",
+	"displayName": "quick-note-searcher",
+	"description": "Quick note (with tags) searcher for VS Code",
 	"version": "0.0.1",
 	"publisher": "kamocyc",
 	"engines": {
@@ -11,14 +11,14 @@
 		"Other"
 	],
 	"activationEvents": [
-		"onCommand:quick-file-searcher.show-search-box"
+		"onCommand:quick-note-searcher.show-search-box"
 	],
 	"main": "./out/extension.js",
 	"contributes": {
 		"commands": [
 			{
-				"command": "quick-file-searcher.show-search-box",
-				"title": "Quick file search"
+				"command": "quick-note-searcher.show-search-box",
+				"title": "Quick note search"
 			}
 		]
 	},
