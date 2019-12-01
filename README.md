@@ -13,6 +13,7 @@ You can quickly seach your markdown notes with words and tags, powered by ripgre
 2. Open a command palette, and type ``Quick note search``.
 3. Type seach words and/or ``#``-prefixed tags. (ex. ``#vscode debug``)
 
+* Files with extension of ``md, markdown, mdown, mkdn txt`` are searched.
 * When input multiple words, tags are treated as "OR" condition, while words are "AND" condition. And only files matched with tags AND matched with words are in result.
 * Text contents of files and file names are searched with words.
 * Search words are case-insensitive.
