@@ -1,7 +1,10 @@
+import { debounce } from 'debounce';
 import * as path from 'path';
 import * as cp from 'child_process';
 import * as vscode from 'vscode';
-import { FileItem, MessageItem } from "./customQuickPickItem";
+import { FileItem, MessageItem, SearcherItem } from "./customQuickPickItem";
+import { intersectArrays, partition, uniqueBy, SetWith, flatten } from "./util";
+import { getFlattenedSearchCommands } from "./searchQueryParser";
 
 export async function quickOpen() {
 	const uri = await pickFile();
@@ -10,13 +13,6 @@ export async function quickOpen() {
 		await vscode.window.showTextDocument(document);
 	}
 }
-
-function partition<T>(array: readonly T[], predicate: (elem: T) => boolean): [T[], T[]] {
-  return array.reduce((result, value) => (
-    result[predicate(value) ? 0 : 1].push(value), result
-  ), <[T[], T[]]>[[], []]);
-}
-
 
 /**
  * Return opened workspace folders / current directory if no workspace are opened
@@ -30,114 +26,201 @@ function getSafeCwds() : string[] {
 }
 
 /**
- * Return quote char in terminal of each platform
- *
- * @returns {string}
+ * Unique key "or-set"
  */
-// function getQuoteChar() : string {
-//   return process.platform === 'win32' ? '"' : '\'';
-// }
+type ResultOrKey = { cwd: string, orIndex: number };
 
-function getSearchCommand(rawQuery: string) : { searchCommands: string[], rawQuery: string } {
-  // const quoteChar = getQuoteChar();
-  const options = ["-0", "--no-line-number", "--no-heading", "--type md"];
-  const tagPrefix = "#";
+/**
+ * Debounce search result
+ */
+class QuickPickItemManager<T extends vscode.QuickPickItem> {
+  private bufferedItems: readonly T[];
   
-  const words = rawQuery.split(/\s+/).filter(s => s);
-  if(!words.length) { return { searchCommands: [], rawQuery } ; }
+  constructor(private input: vscode.QuickPick<T>) {
+    this.bufferedItems = input.items;
+  }
   
-  const [tagWords, keyWords] = partition(words, (w => w.charAt(0) === tagPrefix));
+  private setItems = debounce(() => this.input.items = this.bufferedItems, 20);
   
-  // タグはOR検索(|で繋いで一度に検索する)
-  const tagSearchCommands =
-    tagWords.length ?
-      [`rg ${options.join(" ")} '^tags\\s*:\\s*\\[[^\\]]*(${tagWords.map(t => t.substring(1)).join("|")})[^\\]]*\\]$'`] :
-      [];
-  // rg  'hoge'
-
-  // キーワードはAND検索
-  const keyWordCommands =
-    keyWords.length ? 
-      keyWords.map(keyWord => {
-        return `rg ${options.join(" ")} '${keyWord}'`;
-      }) :
-      [];
+  public set(items: T[]) {
+    this.bufferedItems = items;
+    this.setItems(); 
+  }
   
-  // ファイル名にマッチさせたい = globで検索して，結合する．GLOBでANDは難しいので，各wordで検索した結果のLISTを結合が必要
-  
-  const searchCommands = tagSearchCommands.concat(keyWordCommands);
-  
-  return { searchCommands, rawQuery };
-}
-
-// function createFileItems(cwd: string, stdout: string): FileItem[] {
-//   return stdout
-//     .split('\n').slice(0, 50)
-//     .map(relative => new FileItem(cwd, vscode.Uri.file(path.join(cwd, relative))));
-// }
-
-function createMessageItem(cwd: string, message: string): MessageItem {
-  return new MessageItem(cwd, message);
-}
-
-interface SearchProcess {
-  commandText: string;
-  cwd: string;
-  rgProcess: cp.ChildProcess;  
-}
-
-function intersectArrays<T>(arr1: T[], arr2: T[], predicate: (elm1: T, elm2: T) => boolean): T[] {
-  return arr1.filter(elm1 => arr2.findIndex(elm2 => predicate(elm1, elm2)) !== -1);
-}
-
-function uniqBy<T>(a: T[], key: (elm: T) => string | number | symbol): T[]{
-    var seen = new Set();
-    return a.filter(item => {
-        var k = key(item);
-        return seen.has(k) ? false : (seen.add(k));
-    });
+  public get items(): readonly T[] {
+    return this.bufferedItems;
+  }
 }
 
 class FoundItemManager {
-  constructor(private input: vscode.QuickPick<FileItem | MessageItem>) {
-    
+  // Set to remember alreadly first added "or-sets"
+  private notFirstSet: SetWith<ResultOrKey>;
+  
+  constructor(private itemManager: QuickPickItemManager<SearcherItem>) {  
+    this.notFirstSet =
+      new SetWith(({cwd, orIndex}, { cwd: cwd_, orIndex: orIndex_ }) => cwd_ === cwd && orIndex_ === orIndex);
   }
   
-  private parseCommandResult(base: string, stdout: string, rawQuery: string): FileItem[] {
+  /**
+   * Remove duplicates of items, in terms of fileName
+   * @param items items
+   */
+  private uniqItems(items: SearcherItem[]): SearcherItem[] {
+    return uniqueBy(items, item => item instanceof MessageItem ? item.message : item.fileName);
+  }
+  
+  /**
+   * Parse a result of a command.
+   * @param stdout stdout of the command
+   * @param command text of the invoked command itself
+   */
+  private parseCommandResult(stdout: string, command: string): { fileName: string, contents: string }[] {
+    const isFilesCommand = command.indexOf("--files") !== -1;
+    
     const items = stdout.split("\n")
+      .filter(line => line.trim())
       .map(line => {
-        const [ fileName, contents ] = line.split("\0");
+        // If file name search, its content is not included in stdout.
+        const [ fileName, contents ] = isFilesCommand ? [ line, "" ] : line.split("\0");
         return { fileName, contents };
       });
     
-    return uniqBy(items, item => item.fileName)
-      .map(relative => new FileItem(base, vscode.Uri.file(path.join(base, relative.fileName)), relative.contents + " " + rawQuery));
+    return uniqueBy(items, item => item.fileName);
   }
   
-  public Clear() {
-    this.input.items = [];
-  }
-  
-  // cwd無いのANDを全部盗らないといけない．一部がKILLされたとき．incrementalであれば，どんどん追加して徐々に絞ってもいいか
-  public AddFileItem(cwd: string, _: string, stdout: string, rawQuery: string) {
-    const newFileItems: FileItem[] = this.parseCommandResult(cwd, stdout, rawQuery);
-    
-    console.log({command: _});
-    
-    if(this.input.items.length !== 0) {
-      // 同じCWD内のデータがあればFilterする / なければ全て追加
-      const [ sameBaseItems, otherBaseItems ] = partition(this.input.items, item => item.base === cwd);
-      
-      // TODO: workspaceでソート順を固定
-      this.input.items = 
-        otherBaseItems.concat(
-          intersectArrays(sameBaseItems as FileItem[], newFileItems, (item1, item2) => item1.fileName === item2.fileName)
-        );
+  /**
+   * Clear items of QuickPickList. If a key is specified, remove only matched items.
+   */
+  public Clear(orKey?: ResultOrKey) {
+    if(orKey === undefined) {
+      this.itemManager.set([]);
     } else {
-      this.input.items = newFileItems;
+      this.itemManager.set(this.itemManager.items.filter(item =>
+        !(item instanceof FileItem && item.base === orKey.cwd && item.orIndex === orKey.orIndex))
+      );
     }
     
-    console.log(this.input.items);
+    console.log( "Clear!" );
+    console.log( { resultItems: this.itemManager.items });
+  }
+  
+  // cwd無いのANDを全部とらないといけない．一部がKILLされたとき．incrementalであれば，どんどん追加して徐々に絞ってもいいか
+  public AddFileItem(cwd: string, orIndex: number, command: string, stdout: string, rawQuery: string) {
+    const newFileItems: FileItem[] =
+      this
+      .parseCommandResult(stdout, command)
+      .map(relative =>
+        new FileItem(cwd, vscode.Uri.file(path.join(cwd, relative.fileName)), relative.contents + " " + rawQuery, orIndex)
+      );
+    
+    console.log({command});
+    
+    if(!this.notFirstSet.has({cwd, orIndex})) {
+      // First occurence of this "or-set"
+      this.itemManager.set(this.uniqItems(this.itemManager.items.concat(newFileItems)));
+      this.notFirstSet.add({cwd, orIndex});
+    } else {
+      // 同じCWD内のデータがあればFilterする / なければ全て追加
+      const [ sameBaseItems, otherBaseItems ] = partition(this.itemManager.items, item => item instanceof FileItem && item.base === cwd && item.orIndex === orIndex);
+      
+      // TODO: 各OR-setごとにソート順を固定
+      this.itemManager.set( 
+        this.uniqItems(otherBaseItems.concat(
+          intersectArrays(sameBaseItems as FileItem[], newFileItems, (item1, item2) => item1.fileName === item2.fileName)
+        )));
+    }
+    
+    console.log( { resultItems: this.itemManager.items });
+  }
+}
+
+class PickFileInputEventHandler {
+  private readonly cwds: string[];
+  private rgProcesses: cp.ChildProcess[];
+  
+  constructor(
+      private readonly input: vscode.QuickPick<SearcherItem>,
+      private readonly resolve: (value?: vscode.Uri | PromiseLike<vscode.Uri | undefined> | undefined) => void) {
+    this.cwds = getSafeCwds();
+    this.rgProcesses = [];
+  }
+  
+  public onDidChangeValue = (rawQuery: string) => {
+    // Kill previously invoked processefs
+    this.rgProcesses.forEach(rg => rg.kill());
+    
+    // Empty list if no search query
+    if (!rawQuery) {
+      this.input.items = [];
+      return;
+    }
+    
+    // Create search commands
+    const searchCommands = getFlattenedSearchCommands(rawQuery);
+    
+    // Set "busy" while `rg` processes are executing
+    this.input.busy = true;
+    let isFirst = true;
+    
+    const itemManager = new FoundItemManager(new QuickPickItemManager(this.input));
+    
+    // 2. Assign executing ChildProcess instances to a variable `rgs`
+    this.rgProcesses = flatten(this.cwds.map(cwd => {
+      return searchCommands.map(({ commandText, index }) => {
+        // 1. Start execution of rg commands
+        const rgProcess = cp.exec(commandText, { cwd }, (err, stdout) => {
+          // 3. This block was invoked when each child process was terminated
+          const i = this.rgProcesses.findIndex(pr => pr === rgProcess);
+          // Confirm this process is not killed previously (and `rgs` was overwritten when the next `onDidChangeValue` invocation, so this proceess does not exists in `rgs`)
+          if (i === -1) { return; }
+          
+          if (isFirst) {
+            // If the first termination of rg command with regard to current `onDidChangeValue`, clear QuickPickItems
+            itemManager.Clear();
+            isFirst = false;
+          }
+          
+          if (!err) {
+            // If no errors, append found items to QuickPickItems
+            itemManager.AddFileItem(cwd, index, commandText, stdout, rawQuery);
+          }
+          
+          if(err && !err.killed && err.code === 1) {
+            // Clear list when exit code 1 (means "no results". See https://github.com/BurntSushi/ripgrep/issues/948))
+            itemManager.Clear({ cwd, orIndex: index });
+          }
+          
+          if (err && !err.killed && err.code !== 1 && err.message) {
+            // If errors occured and process was not killed (and error message exists), show error message
+            this.input.items = this.input.items.concat([new MessageItem(cwd, err.message)]);
+          }
+          
+          // Remove this terminated process from `rgs`
+          this.rgProcesses.splice(i, 1);
+          
+          if (!this.rgProcesses.length) {
+            // If all processes were terminated, set as `not busy`
+            this.input.busy = false;
+          }
+        });
+        
+        return rgProcess;
+      });
+    }));
+  }
+  
+  public onDidChangeSelection = (items: (SearcherItem)[]) => {
+    const item = items[0];
+    if (item instanceof FileItem) {
+      this.resolve(item.uri);
+      this.input.hide();
+    }
+  }
+  
+  public onDidHide = () => {
+    this.rgProcesses.forEach(rg => rg.kill());
+    this.resolve(undefined);
+    this.input.dispose();
   }
 }
 
@@ -146,93 +229,23 @@ async function pickFile()
 	const disposables: vscode.Disposable[] = [];
 	try {
 		return await new Promise<vscode.Uri | undefined>((resolve, _) => {
+      const input = vscode.window.createQuickPick<SearcherItem>();
       
-      const cwds = getSafeCwds();
-      
-			const input = vscode.window.createQuickPick<FileItem | MessageItem>();
       input.ignoreFocusOut = true;
       input.matchOnDescription = true;
       
-			input.placeholder = 'Type to search for files';
-			
-      let rgs: SearchProcess[] = [];
+      input.placeholder = 'Type to search for files';
       
-			disposables.push(
-				input.onDidChangeValue((value: string) => {
-          // Kill previously invoked processes
-					rgs.forEach(rg => rg.rgProcess.kill());
-          
-          // Empty list if no search query
-					if (!value) {
-						input.items = [];
-						return;
-					}
-          
-          const { searchCommands, rawQuery } = getSearchCommand(value);
-          
-          // Set busy while `rg` processes are executing
-					input.busy = true;
-          let isFirst = true;
-          
-          const itemManager = new FoundItemManager(input);
-          
-          // 2. Assign executing ChildProcess instances to a variable `rgs`
-					rgs = (<SearchProcess[]>[]).concat(...cwds.map(cwd => {
-            return searchCommands.map(commandText => {
-              // 1. Start execution of rg commands
-              const rgProcess = cp.exec(commandText, { cwd }, (err, stdout) => {
-                // 3. This block was invoked when each child process was terminated
-                const i = rgs.findIndex(pr => pr.rgProcess === rgProcess);
-                // Confirm this process is not killed previously (and `rgs` was overwritten when the next `onDidChangeValue` invocation, so this proceess does not exists in `rgs`)
-                if (i === -1) { return; }
-                
-                if (isFirst) {
-                  // If the first termination of rg command with regard to current `onDidChangeValue`, clear QuickPickItems
-                  itemManager.Clear();
-                  isFirst = false;
-                }
-                
-                if (!err) {
-                  // If no errors, append found items to QuickPickItems
-                  itemManager.AddFileItem(cwd, commandText, stdout, rawQuery);
-                }
-                
-                if (err && err.killed && err.code !== 1 && err.message) {
-                  // If errors occured and process was not killed (and error message exists), show error message
-                  input.items = input.items.concat([createMessageItem(cwd, err.message)]);
-                }
-                
-                // Remove this terminated process from `rgs`
-                rgs.splice(i, 1);
-                
-                if (!rgs.length) {
-                  // If all processes were terminated, set as `not busy`
-                  input.busy = false;
-                }
-              });
-              
-						  return { commandText, cwd, rgProcess };
-            });
-					}));
-				}),
-        
-				input.onDidChangeSelection(items => {
-					const item = items[0];
-					if (item instanceof FileItem) {
-						resolve(item.uri);
-						input.hide();
-					}
-				}),
-        
-				input.onDidHide(() => {
-					rgs.forEach(rg => rg.rgProcess.kill());
-					resolve(undefined);
-					input.dispose();
-				})
-			);
+      const inputHandler = new PickFileInputEventHandler(input, resolve);
       
-			input.show();
-		});
+      disposables.push(
+        input.onDidChangeSelection(debounce((items: (SearcherItem)[]) => inputHandler.onDidChangeSelection(items), 500)),
+        input.onDidChangeValue(inputHandler.onDidChangeValue),
+        input.onDidHide(inputHandler.onDidHide)
+      );
+      
+      input.show();
+    });
 	} finally {
 		disposables.forEach(d => d.dispose());
 	}
